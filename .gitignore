@@ -5,12 +5,11 @@
 .env
 .env.local
 .env.*.local
+.env.example
 
 # Firebase
 .firebase/
 *.log
-
-# Firebase credentials
 serviceAccountKey.json
 
 # IDE
