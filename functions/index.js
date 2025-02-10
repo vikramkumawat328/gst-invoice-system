@@ -1,78 +1,52 @@
 const functions = require('firebase-functions');
 const admin = require('firebase-admin');
-const axios = require('axios');
+const express = require('express');
+const cors = require('cors');
+
+// Import routes
+const routes = require('./routes');
+
+// Import GST controller for Firestore trigger
+const { calculateGST, submitToGSTAPI, generateInvoiceNumber } = require('./controllers/gstController');
+
 require('dotenv').config();
 
-admin.initializeApp();
 
-// GST rate constants
-const GST_RATE = 0.18; // 18%
-const SGST_RATE = 0.09; // 9%
-const CGST_RATE = 0.09; // 9%
+const serviceAccount = require('../assignment-ad9dc-firebase-adminsdk-fbsvc-d6d75f6266.json');
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  projectId: 'assignment-ad9dc'
+});
 
-/**
- * Calculate GST components based on booking amount and state
- * @param {number} amount - Total booking amount
- * @param {boolean} isInterState - Whether the transaction is inter-state
- * @returns {Object} GST components
- */
-const calculateGST = (amount, isInterState) => {
-  if (isInterState) {
-    return {
-      igst: amount * GST_RATE,
-      sgst: 0,
-      cgst: 0,
-      totalGST: amount * GST_RATE
-    };
-  }
-  
-  const sgst = amount * SGST_RATE;
-  const cgst = amount * CGST_RATE;
-  
-  return {
-    igst: 0,
-    sgst,
-    cgst,
-    totalGST: sgst + cgst
-  };
-};
 
-/**
- * Submit GST details to external API
- * @param {Object} gstData - GST calculation details
- * @returns {Promise} API response
- */
-const submitToGSTAPI = async (gstData) => {
-  try {
-    const response = await axios.post(process.env.GST_API_ENDPOINT, gstData, {
-      headers: {
-        'Authorization': `Bearer ${process.env.GST_API_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    });
-    return response.data;
-  } catch (error) {
-    console.error('GST API Error:', error);
-    throw error;
-  }
-};
+const app = express();
 
-/**
- * Generate invoice number
- * @returns {string} Unique invoice number
- */
-const generateInvoiceNumber = () => {
-  return `INV-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-};
+// Global Middleware
+app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Cloud Function triggered on booking document status change
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    error: 'Something went wrong!',
+    message: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
+});
+
+// Register all routes
+app.use('/', routes);
+
+// Export the Express app as Firebase Functions
+exports.api = functions.https.onRequest(app);
+
 exports.processGSTInvoice = functions.firestore
   .document('bookings/{bookingId}')
   .onUpdate(async (change, context) => {
     const newData = change.after.data();
-    const previousData = change.before.data();
+    const previousData = change.before.data();    
     
-    // Only process if status changed to 'finished'
     if (previousData.status !== 'finished' && newData.status === 'finished') {
       const bookingId = context.params.bookingId;
       
@@ -96,7 +70,7 @@ exports.processGSTInvoice = functions.firestore
         // Submit to GST API
         const gstApiResponse = await submitToGSTAPI(invoiceData);
         
-        // Store invoice in Firestore
+        
         await admin.firestore()
           .collection('invoices')
           .doc(invoiceData.invoiceNumber)
